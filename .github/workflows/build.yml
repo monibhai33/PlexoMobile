@@ -74,8 +74,8 @@ jobs:
                   applicationId = "com.plexo.mobile"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 5
-                  versionName = "1.4"
+                  versionCode = 6
+                  versionName = "1.5"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -111,6 +111,7 @@ jobs:
           package com.plexo.mobile
 
           import android.app.Activity
+          import android.app.AlertDialog
           import android.content.ContentValues
           import android.content.Context
           import android.graphics.Color
@@ -129,6 +130,10 @@ jobs:
           import android.view.ViewGroup
           import android.widget.Button
           import android.widget.EditText
+          import android.webkit.CookieManager
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
+          import android.text.InputType
           import android.widget.LinearLayout
           import android.widget.ProgressBar
           import android.widget.ScrollView
@@ -164,6 +169,9 @@ jobs:
               private lateinit var statusTv: TextView
               private lateinit var bar: ProgressBar
               private lateinit var urlBox: EditText
+              private lateinit var wifiChunksBox: EditText
+              private lateinit var cellChunksBox: EditText
+              private lateinit var threadCountBox: EditText
               private lateinit var startBtn: Button
               private lateinit var activateBtn: Button
               private lateinit var stopBtn: Button
@@ -212,6 +220,27 @@ jobs:
                   }
                   root.addView(activateBtn, params(18))
 
+                  root.addView(label("Manual download settings (maximum 32 threads)", 15f, Color.WHITE, true))
+                  val settingsRow = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                  }
+                  fun numberBox(hintText: String, value: String): EditText = EditText(this).apply {
+                      hint = hintText
+                      setText(value)
+                      inputType = InputType.TYPE_CLASS_NUMBER
+                      textSize = 14f
+                      setTextColor(Color.WHITE)
+                      setHintTextColor(Color.LTGRAY)
+                      setPadding(10, 8, 10, 8)
+                  }
+                  wifiChunksBox = numberBox("Wi-Fi chunks", "4")
+                  cellChunksBox = numberBox("Mobile chunks", "4")
+                  threadCountBox = numberBox("Threads (max 32)", "8")
+                  settingsRow.addView(wifiChunksBox, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                  settingsRow.addView(cellChunksBox, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                  settingsRow.addView(threadCountBox, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                  root.addView(settingsRow, params(10))
+
                   urlBox = EditText(this).apply {
                       hint = "Paste a direct HTTP/HTTPS file URL"
                       setText("https://sabnzbd.org/tests/internetspeed/10MB.bin")
@@ -222,7 +251,10 @@ jobs:
                       setPadding(20, 18, 20, 18)
                       // Keep the platform EditText underline, like the original interface.
                   }
-                  root.addView(urlBox, params(16))
+                  root.addView(urlBox, params(8))
+                  val browserBtn = button("Open in-app browser", Color.rgb(65, 65, 65))
+                  browserBtn.setOnClickListener { openInAppBrowser() }
+                  root.addView(browserBtn, params(16))
 
                   bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
                       max = 100
@@ -349,11 +381,78 @@ jobs:
                   }
               }
 
+              private fun configuredChunkCounts(): Pair<Int, Int> {
+                  val wifiCount = wifiChunksBox.text.toString().toIntOrNull()?.coerceIn(0, 32) ?: 0
+                  val cellCount = cellChunksBox.text.toString().toIntOrNull()?.coerceIn(0, 32) ?: 0
+                  if (wifiCount + cellCount !in 1..32) {
+                      throw IllegalArgumentException("Set Wi-Fi + Mobile chunks to a total between 1 and 32.")
+                  }
+                  return wifiCount to cellCount
+              }
+
+              private fun configuredThreadCount(chunkTotal: Int): Int {
+                  return (threadCountBox.text.toString().toIntOrNull() ?: chunkTotal).coerceIn(1, 32).coerceAtMost(chunkTotal)
+              }
+
+              private fun openInAppBrowser() {
+                  val browserLayout = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(16, 12, 16, 12)
+                  }
+                  val address = EditText(this).apply {
+                      hint = "Website address"
+                      setSingleLine(true)
+                      setText(urlBox.text.toString().trim().takeIf { it.startsWith("http") } ?: "https://")
+                  }
+                  val navRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                  val go = button("Go", Color.rgb(50, 90, 180))
+                  navRow.addView(address, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                  navRow.addView(go)
+                  val web = WebView(this).apply {
+                      settings.javaScriptEnabled = true
+                      settings.domStorageEnabled = true
+                      webViewClient = WebViewClient()
+                  }
+                  go.setOnClickListener {
+                      var target = address.text.toString().trim()
+                      if (!target.startsWith("http://") && !target.startsWith("https://")) target = "https://$target"
+                      address.setText(target)
+                      web.loadUrl(target)
+                  }
+                  val useUrl = button("Use this URL in downloader", Color.rgb(0, 160, 70))
+                  useUrl.setOnClickListener {
+                      val current = web.url ?: address.text.toString()
+                      urlBox.setText(current)
+                      (it.parent as? android.view.ViewGroup)?.let { _ -> }
+                  }
+                  browserLayout.addView(navRow)
+                  browserLayout.addView(web, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+                  browserLayout.addView(useUrl)
+                  val dialog = AlertDialog.Builder(this).setTitle("Plexo Browser").setView(browserLayout)
+                      .setNegativeButton("Close", null).create()
+                  useUrl.setOnClickListener {
+                      val current = web.url ?: address.text.toString()
+                      urlBox.setText(current)
+                      dialog.dismiss()
+                  }
+                  dialog.setOnDismissListener { web.destroy() }
+                  dialog.show()
+                  dialog.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, (resources.displayMetrics.heightPixels * 0.85f).toInt())
+                  go.performClick()
+              }
+
               private fun beginDownload() {
                   val text = urlBox.text.toString().trim()
                   val parsed = try { URL(text) } catch (_: Exception) { null }
                   if (parsed == null || (parsed.protocol != "http" && parsed.protocol != "https")) {
                       statusTv.text = "Enter a valid direct HTTP/HTTPS file URL."
+                      return
+                  }
+                  try {
+                      val (wifiCount, cellCount) = configuredChunkCounts()
+                      configuredThreadCount(wifiCount + cellCount)
+                  } catch (e: Exception) {
+                      statusTv.text = e.message ?: "Invalid chunk settings."
                       return
                   }
                   if (!active.compareAndSet(false, true)) {
@@ -393,7 +492,9 @@ jobs:
                   c.connectTimeout = 15000
                   c.readTimeout = 25000
                   c.instanceFollowRedirects = true
-                  c.setRequestProperty("User-Agent", "PlexoMobile/1.1")
+                  c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36")
+                  val cookie = try { CookieManager.getInstance().getCookie(url) } catch (_: Exception) { null }
+                  if (!cookie.isNullOrBlank()) c.setRequestProperty("Cookie", cookie)
                   return c
               }
 
@@ -432,7 +533,7 @@ jobs:
                   }
 
                   ui.post {
-                      statusTv.text = "Preparing 8-part download..."
+                      statusTv.text = "Preparing ${configuredChunkCounts().let { it.first + it.second }}-part download with up to ${configuredThreadCount(configuredChunkCounts().let { it.first + it.second })} threads..."
                       wifiByteCounter.set(0L)
                       cellByteCounter.set(0L)
                       lastSpeedAt = System.currentTimeMillis()
@@ -449,7 +550,8 @@ jobs:
                       }
                       RandomAccessFile(assembled, "rw").use { output ->
                           output.setLength(total)
-                          val count = 8
+                          val (wifiCount, cellCount) = configuredChunkCounts()
+                          val count = wifiCount + cellCount
                           val chunkSize = (total + count - 1L) / count
                           for (i in 0 until count) {
                               val chunkStart = i * chunkSize
@@ -491,13 +593,14 @@ jobs:
               }
 
               private fun downloadChunksResumable(url: String, workDir: File, total: Long) {
-                  val count = 8
+                  val (wifiChunkCount, cellChunkCount) = configuredChunkCounts()
+                  val count = wifiChunkCount + cellChunkCount
+                  val threadCount = configuredThreadCount(count)
                   val chunkSize = (total + count - 1L) / count
-                  // Keep a fixed 4/4 split when both networks are available.
-                  // Even-numbered chunks prefer Wi-Fi; odd-numbered chunks prefer cellular.
+                  // User-controlled split: first N chunks prefer Wi-Fi, remaining chunks prefer mobile data.
                   val wifiAvailable = wifiNet
                   val cellAvailable = cellNet
-                  val executor = Executors.newFixedThreadPool(count)
+                  val executor = Executors.newFixedThreadPool(threadCount)
                   val futures = ArrayList<Future<*>>()
                   val done = AtomicLong(0L)
                   val initial = (0 until count).sumOf { i ->
@@ -520,7 +623,7 @@ jobs:
                                   part.delete()
                                   offset = 0L
                               }
-                              val selected = if (i % 2 == 0) {
+                              val selected = if (i < wifiChunkCount) {
                                   wifiAvailable ?: cellAvailable
                               } else {
                                   cellAvailable ?: wifiAvailable

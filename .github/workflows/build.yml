@@ -149,6 +149,8 @@ jobs:
           import android.webkit.WebViewClient
           import android.webkit.WebChromeClient
           import android.webkit.DownloadListener
+          import android.webkit.JavascriptInterface
+          import android.util.Base64
           import android.text.InputType
           import android.widget.LinearLayout
           import android.widget.ProgressBar
@@ -481,8 +483,39 @@ jobs:
                       setPadding(4, 3, 4, 6)
                   }
 
+                  val browserDownloadBridge = object {
+                      @JavascriptInterface
+                      fun saveBlob(base64Data: String, requestedName: String?, mimeType: String?) {
+                          // A blob/data URL is already materialized by the page; save its bytes safely,
+                          // then use the app's existing Downloads destination helper.
+                          worker.execute {
+                              var temp: File? = null
+                              try {
+                                  val cleanName = (requestedName ?: "plexo-download")
+                                      .substringAfterLast('/')
+                                      .substringAfterLast('\\')
+                                      .replace(Regex("[^A-Za-z0-9._-]"), "_")
+                                      .ifBlank { "plexo-download.bin" }
+                                  val bytes = Base64.decode(base64Data, Base64.DEFAULT)
+                                  temp = File(cacheDir, "browser-blob-${System.currentTimeMillis()}.tmp")
+                                  FileOutputStream(temp).use { it.write(bytes) }
+                                  val savedAt = saveToDownloads(temp, cleanName)
+                                  ui.post {
+                                      statusTv.text = "Browser download complete! Saved to $savedAt"
+                                      android.widget.Toast.makeText(this@MainActivity, "फ़ाइल डाउनलोड हो गई", android.widget.Toast.LENGTH_SHORT).show()
+                                  }
+                              } catch (e: Exception) {
+                                  ui.post { statusTv.text = "Browser file save error: ${e.message ?: "unknown error"}" }
+                              } finally {
+                                  try { temp?.delete() } catch (_: Exception) {}
+                              }
+                          }
+                      }
+                  }
+
                   val web = WebView(this).apply {
                       settings.javaScriptEnabled = true
+                      addJavascriptInterface(browserDownloadBridge, "PlexoDownload")
                       settings.domStorageEnabled = true
                       settings.loadsImagesAutomatically = true
                       settings.javaScriptCanOpenWindowsAutomatically = false
@@ -508,6 +541,54 @@ jobs:
                               titleView.text = view?.title ?: "Plexo Browser"
                               if (!url.isNullOrBlank()) address.setText(url)
                               progress.visibility = android.view.View.GONE
+                              // Capture blob:/data: download anchors. Native WebView DownloadListener
+                              // does not report blob: URLs, so serialize the Blob and pass bytes to Kotlin.
+                              view?.evaluateJavascript("""
+                                  (function() {
+                                    if (window.__plexoDownloadHookInstalled) return;
+                                    window.__plexoDownloadHookInstalled = true;
+                                    function sendBlob(url, name, mime) {
+                                      fetch(url).then(function(r){ return r.blob(); }).then(function(blob) {
+                                        var reader = new FileReader();
+                                        reader.onloadend = function() {
+                                          var data = String(reader.result || '').split(',')[1] || '';
+                                          if (window.PlexoDownload && data) {
+                                            window.PlexoDownload.saveBlob(data, name || 'plexo-download', mime || blob.type || 'application/octet-stream');
+                                          }
+                                        };
+                                        reader.readAsDataURL(blob);
+                                      }).catch(function(e){ console.log('Plexo blob download failed', e); });
+                                    }
+                                    document.addEventListener('click', function(ev) {
+                                      var a = ev.target && ev.target.closest ? ev.target.closest('a[download],a[href^="blob:"],a[href^="data:"]') : null;
+                                      if (!a) return;
+                                      var href = a.href || '';
+                                      if (href.indexOf('blob:') === 0 || href.indexOf('data:') === 0) {
+                                        ev.preventDefault();
+                                        sendBlob(href, a.getAttribute('download') || 'plexo-download', '');
+                                      }
+                                    }, true);
+                                    // For explicit download forms only, preserve the page's normal login/forms.
+                                    document.addEventListener('submit', function(ev) {
+                                      var f = ev.target;
+                                      if (!f || String(f.method || '').toLowerCase() !== 'post') return;
+                                      if (!(f.hasAttribute('download') || f.dataset.plexoDownload === 'true')) return;
+                                      ev.preventDefault();
+                                      var fd = new FormData(f);
+                                      fetch(f.action || location.href, {method:'POST', body:fd, credentials:'include'})
+                                        .then(function(r){ if (!r.ok) throw new Error('HTTP '+r.status); return r.blob(); })
+                                        .then(function(blob) {
+                                          var reader = new FileReader();
+                                          reader.onloadend = function() {
+                                            var data = String(reader.result || '').split(',')[1] || '';
+                                            var name = f.getAttribute('download') || 'plexo-post-download';
+                                            if (window.PlexoDownload && data) window.PlexoDownload.saveBlob(data, name, blob.type || 'application/octet-stream');
+                                          };
+                                          reader.readAsDataURL(blob);
+                                        }).catch(function(e){ console.log('Plexo POST download failed', e); });
+                                    }, true);
+                                  })();
+                              """.trimIndent(), null)
                               backButton.isEnabled = canGoBack()
                               forwardButton.isEnabled = canGoForward()
                           }
@@ -529,15 +610,12 @@ jobs:
                               if (downloadUrl.startsWith("http://", true) ||
                                   downloadUrl.startsWith("https://", true)) {
                                   urlBox.setText(downloadUrl)
-                                  statusTv.text = "Website download detected. Starting Plexo downloader…"
+                                  statusTv.text = "Website download detected. Starting existing Plexo downloader…"
                                   beginDownload()
+                              } else if (downloadUrl.startsWith("blob:", true) || downloadUrl.startsWith("data:", true)) {
+                                  statusTv.text = "Blob/data download detected; page download hook will try to save it."
                               } else {
-                                  statusTv.text = "यह वेबसाइट का डाउनलोड लिंक WebView के सीधे डाउनलोडर से समर्थित नहीं है: $downloadUrl"
-                                  AlertDialog.Builder(this@MainActivity)
-                                      .setTitle("यह डाउनलोड लिंक समर्थित नहीं है")
-                                      .setMessage("Plexo का मौजूदा डाउनलोडर सीधे HTTP/HTTPS फ़ाइल लिंक स्वीकार करता है। Blob, data या JavaScript-आधारित डाउनलोड के लिए अलग सहायता चाहिए।")
-                                      .setPositiveButton("ठीक है", null)
-                                      .show()
+                                  statusTv.text = "Unsupported download URL scheme: $downloadUrl"
                               }
                           }
                       })

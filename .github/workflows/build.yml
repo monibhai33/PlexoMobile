@@ -51,7 +51,7 @@ jobs:
               img = img.crop(bbox)
 
           size = 432
-          img.thumbnail((290, 290), Image.Resampling.LANCZOS)
+          img.thumbnail((240, 240), Image.Resampling.LANCZOS)
           canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
           canvas.alpha_composite(
               img, ((size-img.width)//2, (size-img.height)//2)

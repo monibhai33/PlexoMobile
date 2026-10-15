@@ -422,52 +422,55 @@ jobs:
 
                   val browserLayout = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
-                      setPadding(10, 10, 10, 10)
-                      setBackgroundColor(Color.rgb(18, 20, 24))
+                      setPadding(0, 0, 0, 0)
+                      setBackgroundColor(Color.rgb(255, 255, 255))
                   }
 
                   val address = EditText(this).apply {
                       hint = "Google खोजें या वेबसाइट का पता लिखें"
                       setSingleLine(true)
                       inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-                      setTextColor(Color.WHITE)
-                      setHintTextColor(Color.LTGRAY)
-                      setPadding(12, 8, 12, 8)
+                      setTextColor(Color.rgb(32, 33, 36))
+                      setHintTextColor(Color.GRAY)
+                      setPadding(16, 10, 12, 10)
+                      background = rounded(Color.rgb(241, 243, 244), 24f)
+                      textSize = 14f
                       setText(urlBox.text.toString().trim().takeIf {
                           it.startsWith("http://", true) || it.startsWith("https://", true)
                       } ?: "https://www.google.com")
                   }
 
-                  fun makeButton(text: String, color: Int = Color.rgb(45, 48, 55)) =
+                  fun makeButton(text: String, color: Int = Color.WHITE) =
                       Button(this).apply {
                           this.text = text
                           isAllCaps = false
-                          setTextColor(Color.WHITE)
-                          background = rounded(color, 10f)
-                          textSize = 12f
-                          setPadding(6, 2, 6, 2)
+                          setTextColor(Color.rgb(60, 64, 67))
+                          background = rounded(color, 18f)
+                          textSize = 13f
+                          minHeight = (38 * resources.displayMetrics.density).toInt()
+                          setPadding(5, 2, 5, 2)
                       }
 
                   val addressRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-                  val goButton = makeButton("खोलें", Color.rgb(35, 105, 190))
+                  val goButton = makeButton("➜", Color.rgb(232, 240, 254)).apply { setTextColor(Color.rgb(26, 115, 232)) }
                   addressRow.addView(address, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                   addressRow.addView(goButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
                   val rowOne = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-                  val backButton = makeButton("←")
-                  val forwardButton = makeButton("→")
+                  val backButton = makeButton("‹")
+                  val forwardButton = makeButton("›")
                   val reloadButton = makeButton("↻")
-                  val homeButton = makeButton("होम")
+                  val homeButton = makeButton("⌂")
                   val bookmarkButton = makeButton("☆")
                   for (b in listOf(backButton, forwardButton, reloadButton, homeButton, bookmarkButton)) {
                       rowOne.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                   }
 
                   val rowTwo = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-                  val findButton = makeButton("पेज में खोजें")
+                  val findButton = makeButton("⌕")
                   val desktopButton = makeButton("Desktop")
-                  val shareButton = makeButton("Share")
-                  val bookmarksButton = makeButton("Bookmarks")
+                  val shareButton = makeButton("↗")
+                  val bookmarksButton = makeButton("★")
                   for (b in listOf(findButton, desktopButton, shareButton, bookmarksButton)) {
                       rowTwo.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                   }
@@ -477,10 +480,12 @@ jobs:
                       progress = 0
                   }
                   val titleView = TextView(this).apply {
-                      text = "Plexo Browser"
+                      text = "नया टैब"
                       textSize = 12f
-                      setTextColor(Color.LTGRAY)
-                      setPadding(4, 3, 4, 6)
+                      setTextColor(Color.rgb(95, 99, 104))
+                      setPadding(14, 2, 14, 4)
+                      maxLines = 1
+                      ellipsize = android.text.TextUtils.TruncateAt.END
                   }
 
                   val browserDownloadBridge = object {
@@ -700,25 +705,97 @@ jobs:
                       }, "लिंक शेयर करें"))
                   }
 
-                  val sendToDownloader = makeButton("इस पेज का URL पुराने डाउनलोडर में भेजें", Color.rgb(0, 135, 70))
+                  val browserHeader = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = android.view.Gravity.CENTER_VERTICAL
+                      setPadding(14, 8, 10, 4)
+                      setBackgroundColor(Color.WHITE)
+                  }
+                  val brand = TextView(this).apply {
+                      text = "◉ Plexo"
+                      textSize = 17f
+                      typeface = Typeface.DEFAULT_BOLD
+                      setTextColor(Color.rgb(26, 115, 232))
+                  }
+                  val tabButton = makeButton("▢ 1", Color.rgb(241, 243, 244))
+                  val menuButton = makeButton("⋮", Color.WHITE)
+                  browserHeader.addView(brand, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                  browserHeader.addView(tabButton)
+                  browserHeader.addView(menuButton)
+
+                  val navToolbar = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = android.view.Gravity.CENTER
+                      setPadding(4, 2, 4, 2)
+                      setBackgroundColor(Color.WHITE)
+                  }
+                  for (b in listOf(backButton, forwardButton, homeButton, bookmarkButton, shareButton)) {
+                      navToolbar.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                  }
+                  val footer = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = android.view.Gravity.CENTER
+                      setPadding(4, 2, 4, 2)
+                      setBackgroundColor(Color.rgb(248, 249, 250))
+                  }
+                  val stopRefreshButton = makeButton("↻", Color.rgb(248, 249, 250))
+                  val pageFindButton = makeButton("पेज में खोजें", Color.rgb(248, 249, 250))
+                  val desktopFooterButton = makeButton("Desktop", Color.rgb(248, 249, 250))
+                  lateinit var dialog: AlertDialog
+                  val downloadsButton = makeButton("डाउनलोड", Color.rgb(232, 240, 254)).apply {
+                      setTextColor(Color.rgb(26, 115, 232))
+                  }
+                  for (b in listOf(stopRefreshButton, pageFindButton, desktopFooterButton, downloadsButton)) {
+                      footer.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                  }
+                  stopRefreshButton.setOnClickListener {
+                      if (progress.visibility == android.view.View.VISIBLE) web.stopLoading() else web.reload()
+                  }
+                  pageFindButton.setOnClickListener { findButton.performClick() }
+                  desktopFooterButton.setOnClickListener { desktopButton.performClick() }
+                  downloadsButton.setOnClickListener {
+                      // Keep download handling on the existing downloader path; this opens the current download screen.
+                      dialog.dismiss()
+                      statusTv.text = "डाउनलोड शुरू करने के लिए पुराने डाउनलोडर का Start Boosted Download इस्तेमाल करें।"
+                  }
+                  tabButton.setOnClickListener {
+                      AlertDialog.Builder(this)
+                          .setTitle("टैब")
+                          .setMessage(titleView.text.toString() + "\\n\\nअभी 1 टैब खुला है।")
+                          .setPositiveButton("नया टैब") { _, _ -> navigate("https://www.google.com") }
+                          .setNegativeButton("बंद करें", null)
+                          .show()
+                  }
+                  menuButton.setOnClickListener {
+                      val options = arrayOf("नया टैब", "बुकमार्क", "पेज में खोजें", "Desktop साइट", "लिंक शेयर करें", "डाउनलोडर में URL भेजें", "ब्राउज़र बंद करें")
+                      AlertDialog.Builder(this).setItems(options) { _, which ->
+                          when (which) {
+                              0 -> navigate("https://www.google.com")
+                              1 -> bookmarksButton.performClick()
+                              2 -> findButton.performClick()
+                              3 -> desktopButton.performClick()
+                              4 -> shareButton.performClick()
+                              5 -> {
+                                  urlBox.setText(web.url ?: address.text.toString())
+                                  statusTv.text = "URL पुराने डाउनलोडर में भेज दिया गया है।"
+                                  dialog.dismiss()
+                              }
+                              6 -> dialog.dismiss()
+                          }
+                      }.show()
+                  }
+
+                  browserLayout.addView(browserHeader)
                   browserLayout.addView(addressRow)
-                  browserLayout.addView(rowOne)
-                  browserLayout.addView(rowTwo)
-                  browserLayout.addView(progress, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 5))
+                  browserLayout.addView(progress, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 3))
                   browserLayout.addView(titleView)
                   browserLayout.addView(web, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-                  browserLayout.addView(sendToDownloader)
+                  browserLayout.addView(navToolbar)
+                  browserLayout.addView(footer)
 
-                  val dialog = AlertDialog.Builder(this)
-                      .setTitle("Plexo Browser")
+                  dialog = AlertDialog.Builder(this)
                       .setView(browserLayout)
-                      .setNegativeButton("ब्राउज़र बंद करें", null)
                       .create()
-                  sendToDownloader.setOnClickListener {
-                      urlBox.setText(web.url ?: address.text.toString())
-                      statusTv.text = "ब्राउज़र का URL पुराने डाउनलोडर में भेज दिया गया है। डाउनलोड शुरू करने के लिए Start Boosted Download दबाएँ।"
-                      dialog.dismiss()
-                  }
                   dialog.setOnDismissListener {
                       web.stopLoading()
                       web.destroy()

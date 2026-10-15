@@ -74,8 +74,8 @@ jobs:
                   applicationId = "com.plexo.mobile"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 2
-                  versionName = "1.1"
+                  versionCode = 3
+                  versionName = "1.2"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -146,6 +146,7 @@ jobs:
           import java.util.concurrent.TimeUnit
           import java.util.concurrent.atomic.AtomicBoolean
           import java.util.concurrent.atomic.AtomicLong
+          import java.util.Locale
 
           class MainActivity : Activity() {
               private lateinit var cm: ConnectivityManager
@@ -164,6 +165,9 @@ jobs:
               private lateinit var bar: ProgressBar
               private lateinit var urlBox: EditText
               private lateinit var startBtn: Button
+              private lateinit var activateBtn: Button
+              private lateinit var stopBtn: Button
+              private var networksRequested = false
 
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
@@ -178,33 +182,42 @@ jobs:
                   }
                   root.addView(label("Plexo Mobile", 28f, Color.WHITE, true))
                   root.addView(label("Wi-Fi + 5G/4G Multi-Network Booster", 14f, Color.LTGRAY))
+
                   val card = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
                       setPadding(22, 22, 22, 22)
                       background = rounded(Color.rgb(30, 30, 30), 24f)
                   }
-                  wifiTv = label("Wi-Fi: Waiting...", 15f, Color.rgb(76, 175, 80))
-                  cellTv = label("Mobile Data: Waiting...", 15f, Color.rgb(33, 150, 243))
+                  wifiTv = label("Wi-Fi: Waiting... | 0 KB/s", 15f, Color.rgb(76, 175, 80))
+                  cellTv = label("Mobile Data: Waiting... | 0 KB/s", 15f, Color.rgb(33, 150, 243))
                   totalTv = label("Combined Speed: 0 KB/s", 19f, Color.rgb(255, 193, 7), true)
                   card.addView(wifiTv)
                   card.addView(cellTv)
                   card.addView(totalTv)
                   root.addView(card, params(18))
 
-                  val activate = button("1. Activate Wi-Fi + Mobile Data", Color.rgb(41, 98, 255))
-                  activate.setOnClickListener { requestNetworks() }
-                  root.addView(activate, params(18))
+                  activateBtn = button("1. Activate Wi-Fi + Mobile Data", Color.rgb(90, 90, 90))
+                  activateBtn.setOnClickListener {
+                      requestNetworks()
+                      networksRequested = true
+                      activateBtn.background = rounded(Color.rgb(0, 200, 83), 18f)
+                      activateBtn.setTextColor(Color.BLACK)
+                      statusTv.text = "Checking Wi-Fi and mobile data networks..."
+                  }
+                  root.addView(activateBtn, params(18))
 
                   urlBox = EditText(this).apply {
                       hint = "Paste a direct HTTP/HTTPS file URL"
                       setText("https://sabnzbd.org/tests/internetspeed/10MB.bin")
                       setTextColor(Color.WHITE)
                       setHintTextColor(Color.GRAY)
+                      textSize = 15f
                       setSingleLine(true)
                       setPadding(20, 18, 20, 18)
-                      background = rounded(Color.rgb(30, 30, 30), 18f, Color.DKGRAY)
+                      // Keep the platform EditText underline, like the original interface.
                   }
                   root.addView(urlBox, params(16))
+
                   bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
                       max = 100
                       progress = 0
@@ -213,17 +226,30 @@ jobs:
                   statusTv = label("Ready to download", 13f, Color.WHITE)
                   root.addView(statusTv, params(14))
 
-                  startBtn = button("2. Start Boosted Download", Color.rgb(0, 230, 118))
-                  startBtn.setTextColor(Color.BLACK)
-                  startBtn.setOnClickListener { beginDownload() }
+                  startBtn = button("2. Start Boosted Download", Color.rgb(90, 90, 90))
+                  startBtn.setOnClickListener {
+                      startBtn.background = rounded(Color.rgb(0, 200, 83), 18f)
+                      startBtn.setTextColor(Color.BLACK)
+                      beginDownload()
+                  }
                   root.addView(startBtn, params(14))
 
-                  val stop = button("Pause / Stop", Color.rgb(211, 47, 47))
-                  stop.setOnClickListener {
-                      stopped.set(true)
-                      statusTv.text = "Stopping download..."
+                  stopBtn = button("Pause / Stop", Color.rgb(211, 47, 47))
+                  stopBtn.setOnClickListener {
+                      if (active.get()) {
+                          stopped.set(true)
+                          stopBtn.background = rounded(Color.rgb(0, 200, 83), 18f)
+                          stopBtn.setTextColor(Color.BLACK)
+                          statusTv.text = "Stopping download..."
+                      } else {
+                          stopped.set(true)
+                          stopBtn.background = rounded(Color.rgb(211, 47, 47), 18f)
+                          stopBtn.setTextColor(Color.WHITE)
+                          statusTv.text = "No active download."
+                      }
                   }
-                  root.addView(stop)
+                  root.addView(stopBtn)
+
                   scroll.addView(root)
                   setContentView(scroll)
                   refreshNetworkStatus()
@@ -283,7 +309,13 @@ jobs:
                           wifiCallback = object : ConnectivityManager.NetworkCallback() {
                               override fun onAvailable(network: Network) {
                                   wifiNet = network
-                                  ui.post { wifiTv.text = "Wi-Fi: Connected" }
+                                  ui.post {
+                                      wifiTv.text = "Wi-Fi: Connected | 0 KB/s"
+                                      if (networksRequested) {
+                                          activateBtn.background = rounded(Color.rgb(0, 200, 83), 18f)
+                                          activateBtn.setTextColor(Color.BLACK)
+                                      }
+                                  }
                               }
                               override fun onLost(network: Network) {
                                   if (wifiNet == network) wifiNet = null
@@ -325,6 +357,10 @@ jobs:
                   stopped.set(false)
                   bar.progress = 0
                   startBtn.isEnabled = false
+                  startBtn.background = rounded(Color.rgb(0, 200, 83), 18f)
+                  startBtn.setTextColor(Color.BLACK)
+                  stopBtn.background = rounded(Color.rgb(0, 200, 83), 18f)
+                  stopBtn.setTextColor(Color.BLACK)
                   worker.execute {
                       try {
                           performDownload(text)
@@ -335,7 +371,13 @@ jobs:
                           }
                       } finally {
                           active.set(false)
-                          ui.post { startBtn.isEnabled = true }
+                          ui.post {
+                              startBtn.isEnabled = true
+                              startBtn.background = rounded(Color.rgb(90, 90, 90), 18f)
+                              startBtn.setTextColor(Color.WHITE)
+                              stopBtn.background = rounded(Color.rgb(211, 47, 47), 18f)
+                              stopBtn.setTextColor(Color.WHITE)
+                          }
                       }
                   }
               }
@@ -500,17 +542,26 @@ jobs:
                   }
               }
 
+              private fun formatSpeed(speedKBps: Long): String {
+                  return if (speedKBps >= 1024L) {
+                      String.format(Locale.US, "%.2f MB/s", speedKBps / 1024.0)
+                  } else {
+                      "$speedKBps KB/s"
+                  }
+              }
+
               private fun updateProgress(done: Long, total: Long, started: Long) {
                   val elapsed = maxOf(1L, System.currentTimeMillis() - started)
-                  val speed = done * 1000L / elapsed / 1024L
+                  val speedKBps = done * 1000L / elapsed / 1024L
+                  val speedText = formatSpeed(speedKBps)
                   ui.post {
                       if (total > 0L) {
                           bar.progress = ((done * 100L) / total).toInt().coerceIn(0, 100)
-                          statusTv.text = "${bar.progress}% • ${done / 1024L}/${total / 1024L} KB • Avg ${speed} KB/s"
+                          statusTv.text = "${bar.progress}% • ${done / 1024L}/${total / 1024L} KB • Avg $speedText"
                       } else {
-                          statusTv.text = "${done / 1024L} KB downloaded • Avg ${speed} KB/s"
+                          statusTv.text = "${done / 1024L} KB downloaded • Avg $speedText"
                       }
-                      totalTv.text = "Download speed: $speed KB/s"
+                      totalTv.text = "Download speed: $speedText"
                   }
               }
 

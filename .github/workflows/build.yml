@@ -91,12 +91,19 @@ jobs:
               <uses-permission android:name="android.permission.INTERNET" />
               <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
               <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
               <application
                   android:allowBackup="true"
                   android:icon="@android:drawable/stat_sys_download"
                   android:label="Plexo Mobile"
                   android:usesCleartextTraffic="true"
                   android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <service
+                      android:name=".DownloadKeepAliveService"
+                      android:exported="false"
+                      android:foregroundServiceType="dataSync" />
                   <activity android:name=".MainActivity" android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
@@ -112,8 +119,15 @@ jobs:
 
           import android.app.Activity
           import android.app.AlertDialog
+          import android.app.Service
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
           import android.content.ContentValues
           import android.content.Context
+          import android.content.Intent
+          import android.os.IBinder
           import android.graphics.Color
           import android.graphics.Typeface
           import android.graphics.drawable.GradientDrawable
@@ -185,6 +199,10 @@ jobs:
 
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
+                  if (Build.VERSION.SDK_INT >= 33 &&
+                      checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                      requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 2303)
+                  }
                   cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
                   val scroll = ScrollView(this).apply {
                       setBackgroundColor(Color.rgb(18, 18, 18))
@@ -400,9 +418,9 @@ jobs:
                       setPadding(16, 12, 16, 12)
                   }
                   val address = EditText(this).apply {
-                      hint = "Website address"
+                      hint = "Search Google or enter website"
                       setSingleLine(true)
-                      setText(urlBox.text.toString().trim().takeIf { it.startsWith("http") } ?: "https://")
+                      setText(urlBox.text.toString().trim().takeIf { it.startsWith("http://") || it.startsWith("https://") } ?: "")
                   }
                   val navRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
                   val go = button("Go", Color.rgb(50, 90, 180))
@@ -414,9 +432,19 @@ jobs:
                       webViewClient = WebViewClient()
                   }
                   go.setOnClickListener {
-                      var target = address.text.toString().trim()
-                      if (!target.startsWith("http://") && !target.startsWith("https://")) target = "https://$target"
-                      address.setText(target)
+                      val typed = address.text.toString().trim()
+                      if (typed.isBlank()) {
+                          address.error = "Enter a search term or website"
+                          return@setOnClickListener
+                      }
+                      val hasScheme = typed.startsWith("http://", ignoreCase = true) || typed.startsWith("https://", ignoreCase = true)
+                      val looksLikeDomain = typed.matches(Regex("(?i)^[a-z0-9.-]+\\.[a-z]{2,}(:[0-9]{1,5})?(/.*)?$"))
+                      val target = when {
+                          hasScheme -> typed
+                          looksLikeDomain -> "https://$typed"
+                          else -> "https://www.google.com/search?q=" + java.net.URLEncoder.encode(typed, "UTF-8")
+                      }
+                      address.setText(typed)
                       web.loadUrl(target)
                   }
                   val useUrl = button("Use this URL in downloader", Color.rgb(0, 160, 70))
@@ -461,6 +489,17 @@ jobs:
                   }
                   stopped.set(false)
                   bar.progress = 0
+                  try {
+                      val serviceIntent = Intent(this, DownloadKeepAliveService::class.java).apply {
+                          action = DownloadKeepAliveService.ACTION_START
+                          putExtra(DownloadKeepAliveService.EXTRA_TITLE, "Plexo Mobile download")
+                          putExtra(DownloadKeepAliveService.EXTRA_TEXT, "Preparing download…")
+                      }
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(serviceIntent)
+                      else startService(serviceIntent)
+                  } catch (_: Exception) {
+                      statusTv.text = "Could not start background download service."
+                  }
                   startBtn.isEnabled = false
                   startBtn.background = rounded(Color.rgb(0, 200, 83), 18f)
                   startBtn.setTextColor(Color.BLACK)
@@ -476,6 +515,9 @@ jobs:
                           }
                       } finally {
                           active.set(false)
+                          try {
+                              stopService(Intent(this@MainActivity, DownloadKeepAliveService::class.java))
+                          } catch (_: Exception) {}
                           ui.post {
                               startBtn.isEnabled = true
                               startBtn.background = rounded(Color.rgb(90, 90, 90), 18f)
@@ -694,6 +736,11 @@ jobs:
                           lastWifiBytes = wifiNow
                           lastCellBytes = cellNow
                           val combined = wifiSpeed + cellSpeed
+                          DownloadKeepAliveService.update(
+                              this@MainActivity,
+                              "Downloading • ${if (total > 0L) ((done * 100L) / total).coerceIn(0L, 100L) else 0L}%",
+                              "${formatSize(done.coerceAtMost(total))} / ${formatSize(total)} • ${formatSpeed(combined)}"
+                          )
                           ui.post {
                               wifiTv.text = "Wi-Fi: ${if (wifiNet != null) "Connected" else "Unavailable"} | ${formatSpeed(wifiSpeed)}"
                               cellTv.text = "Mobile Data: ${if (cellNet != null) "Connected" else "Unavailable"} | ${formatSpeed(cellSpeed)}"
@@ -865,6 +912,72 @@ jobs:
                   worker.shutdownNow()
                   super.onDestroy()
               }
+          }
+
+          class DownloadKeepAliveService : Service() {
+              companion object {
+                  const val ACTION_START = "com.plexo.mobile.action.START_DOWNLOAD"
+                  const val EXTRA_TITLE = "title"
+                  const val EXTRA_TEXT = "text"
+                  private const val CHANNEL_ID = "plexo_downloads"
+                  private const val NOTIFICATION_ID = 2301
+
+                  fun update(context: Context, title: String, text: String) {
+                      val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                      createChannel(manager)
+                      manager.notify(NOTIFICATION_ID, buildNotification(context, title, text))
+                  }
+
+                  private fun createChannel(manager: NotificationManager) {
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                          val channel = NotificationChannel(
+                              CHANNEL_ID, "Plexo downloads", NotificationManager.IMPORTANCE_LOW
+                          ).apply { description = "Ongoing Plexo Mobile download progress" }
+                          manager.createNotificationChannel(channel)
+                      }
+                  }
+
+                  private fun buildNotification(context: Context, title: String, text: String): Notification {
+                      val openIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+                      val pending = if (openIntent != null) {
+                          PendingIntent.getActivity(
+                              context, 2302, openIntent,
+                              PendingIntent.FLAG_UPDATE_CURRENT or
+                                  (if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0)
+                          )
+                      } else null
+                      val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                          Notification.Builder(context, CHANNEL_ID)
+                      } else {
+                          @Suppress("DEPRECATION")
+                          Notification.Builder(context)
+                      }
+                      builder.setSmallIcon(android.R.drawable.stat_sys_download)
+                          .setContentTitle(title)
+                          .setContentText(text)
+                          .setStyle(Notification.BigTextStyle().bigText(text))
+                          .setOngoing(true)
+                          .setOnlyAlertOnce(true)
+                      if (pending != null) builder.setContentIntent(pending)
+                      return builder.build()
+                  }
+              }
+
+              override fun onCreate() {
+                  super.onCreate()
+                  val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                  createChannel(manager)
+                  startForeground(NOTIFICATION_ID, buildNotification(this, "Plexo Mobile", "Preparing download…"))
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  val title = intent?.getStringExtra(EXTRA_TITLE) ?: "Plexo Mobile download"
+                  val text = intent?.getStringExtra(EXTRA_TEXT) ?: "Download running in background"
+                  update(this, title, text)
+                  return START_STICKY
+              }
+
+              override fun onBind(intent: Intent?): IBinder? = null
           }
           KOTLIN
 

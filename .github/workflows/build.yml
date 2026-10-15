@@ -147,6 +147,8 @@ jobs:
           import android.webkit.CookieManager
           import android.webkit.WebView
           import android.webkit.WebViewClient
+          import android.webkit.WebChromeClient
+          import android.webkit.DownloadListener
           import android.text.InputType
           import android.widget.LinearLayout
           import android.widget.ProgressBar
@@ -413,62 +415,243 @@ jobs:
               }
 
               private fun openInAppBrowser() {
+                  val prefs = getSharedPreferences("plexo_browser", Context.MODE_PRIVATE)
+                  var desktopMode = false
+
                   val browserLayout = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
-                      setPadding(16, 12, 16, 12)
+                      setPadding(10, 10, 10, 10)
+                      setBackgroundColor(Color.rgb(18, 20, 24))
                   }
+
                   val address = EditText(this).apply {
-                      hint = "Search Google or enter website"
+                      hint = "Google खोजें या वेबसाइट का पता लिखें"
                       setSingleLine(true)
-                      setText(urlBox.text.toString().trim().takeIf { it.startsWith("http://") || it.startsWith("https://") } ?: "")
+                      inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+                      setTextColor(Color.WHITE)
+                      setHintTextColor(Color.LTGRAY)
+                      setPadding(12, 8, 12, 8)
+                      setText(urlBox.text.toString().trim().takeIf {
+                          it.startsWith("http://", true) || it.startsWith("https://", true)
+                      } ?: "https://www.google.com")
                   }
-                  val navRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-                  val go = button("Go", Color.rgb(50, 90, 180))
-                  navRow.addView(address, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                  navRow.addView(go)
+
+                  fun makeButton(text: String, color: Int = Color.rgb(45, 48, 55)) =
+                      Button(this).apply {
+                          this.text = text
+                          isAllCaps = false
+                          setTextColor(Color.WHITE)
+                          background = rounded(color, 10f)
+                          textSize = 12f
+                          setPadding(6, 2, 6, 2)
+                      }
+
+                  val addressRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                  val goButton = makeButton("खोलें", Color.rgb(35, 105, 190))
+                  addressRow.addView(address, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                  addressRow.addView(goButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+                  val rowOne = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                  val backButton = makeButton("←")
+                  val forwardButton = makeButton("→")
+                  val reloadButton = makeButton("↻")
+                  val homeButton = makeButton("होम")
+                  val bookmarkButton = makeButton("☆")
+                  for (b in listOf(backButton, forwardButton, reloadButton, homeButton, bookmarkButton)) {
+                      rowOne.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                  }
+
+                  val rowTwo = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                  val findButton = makeButton("पेज में खोजें")
+                  val desktopButton = makeButton("Desktop")
+                  val shareButton = makeButton("Share")
+                  val bookmarksButton = makeButton("Bookmarks")
+                  for (b in listOf(findButton, desktopButton, shareButton, bookmarksButton)) {
+                      rowTwo.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                  }
+
+                  val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                      max = 100
+                      progress = 0
+                  }
+                  val titleView = TextView(this).apply {
+                      text = "Plexo Browser"
+                      textSize = 12f
+                      setTextColor(Color.LTGRAY)
+                      setPadding(4, 3, 4, 6)
+                  }
+
                   val web = WebView(this).apply {
                       settings.javaScriptEnabled = true
                       settings.domStorageEnabled = true
-                      webViewClient = WebViewClient()
-                  }
-                  go.setOnClickListener {
-                      val typed = address.text.toString().trim()
-                      if (typed.isBlank()) {
-                          address.error = "Enter a search term or website"
-                          return@setOnClickListener
+                      settings.loadsImagesAutomatically = true
+                      settings.javaScriptCanOpenWindowsAutomatically = false
+                      settings.setSupportMultipleWindows(false)
+                      settings.builtInZoomControls = true
+                      settings.displayZoomControls = false
+                      settings.allowFileAccess = false
+                      settings.allowContentAccess = true
+                      CookieManager.getInstance().setAcceptCookie(true)
+                      if (Build.VERSION.SDK_INT >= 21) {
+                          CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
                       }
-                      val hasScheme = typed.startsWith("http://", ignoreCase = true) || typed.startsWith("https://", ignoreCase = true)
-                      val looksLikeDomain = typed.matches(Regex("(?i)^[a-z0-9.-]+\\.[a-z]{2,}(:[0-9]{1,5})?(/.*)?$"))
+                      webViewClient = object : WebViewClient() {
+                          override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                              super.onPageStarted(view, url, favicon)
+                              progress.visibility = android.view.View.VISIBLE
+                              titleView.text = "पेज लोड हो रहा है…"
+                              if (!url.isNullOrBlank()) address.setText(url)
+                          }
+
+                          override fun onPageFinished(view: WebView?, url: String?) {
+                              super.onPageFinished(view, url)
+                              titleView.text = view?.title ?: "Plexo Browser"
+                              if (!url.isNullOrBlank()) address.setText(url)
+                              progress.visibility = android.view.View.GONE
+                              backButton.isEnabled = canGoBack()
+                              forwardButton.isEnabled = canGoForward()
+                          }
+                      }
+                      webChromeClient = object : WebChromeClient() {
+                          override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                              progress.progress = newProgress
+                              progress.visibility = if (newProgress >= 100) android.view.View.GONE else android.view.View.VISIBLE
+                          }
+                          override fun onReceivedTitle(view: WebView?, title: String?) {
+                              titleView.text = title ?: "Plexo Browser"
+                          }
+                      }
+
+                      // Automatically start the SAME existing downloader when a website starts a file download.
+                      // This preserves beginDownload() -> performDownload() and its current chunk/resume/background logic.
+                      setDownloadListener(DownloadListener { downloadUrl, _, contentDisposition, mimeType, _ ->
+                          runOnUiThread {
+                              if (downloadUrl.startsWith("http://", true) ||
+                                  downloadUrl.startsWith("https://", true)) {
+                                  urlBox.setText(downloadUrl)
+                                  statusTv.text = "Website download detected. Starting Plexo downloader…"
+                                  beginDownload()
+                              } else {
+                                  statusTv.text = "यह वेबसाइट का डाउनलोड लिंक WebView के सीधे डाउनलोडर से समर्थित नहीं है: $downloadUrl"
+                                  AlertDialog.Builder(this@MainActivity)
+                                      .setTitle("यह डाउनलोड लिंक समर्थित नहीं है")
+                                      .setMessage("Plexo का मौजूदा डाउनलोडर सीधे HTTP/HTTPS फ़ाइल लिंक स्वीकार करता है। Blob, data या JavaScript-आधारित डाउनलोड के लिए अलग सहायता चाहिए।")
+                                      .setPositiveButton("ठीक है", null)
+                                      .show()
+                              }
+                          }
+                      })
+                  }
+
+                  val mobileUserAgent = web.settings.userAgentString
+
+                  fun navigate(raw: String) {
+                      val typed = raw.trim()
+                      if (typed.isBlank()) {
+                          address.error = "वेबसाइट या खोज लिखें"
+                          return
+                      }
+                      val hasScheme = typed.startsWith("http://", true) || typed.startsWith("https://", true)
+                      val looksLikeDomain = typed.matches(
+                          Regex("(?i)^[a-z0-9.-]+\\.[a-z]{2,}(:[0-9]{1,5})?(/.*)?$")
+                      )
                       val target = when {
                           hasScheme -> typed
                           looksLikeDomain -> "https://$typed"
-                          else -> "https://www.google.com/search?q=" + java.net.URLEncoder.encode(typed, "UTF-8")
+                          else -> "https://www.google.com/search?q=" +
+                              java.net.URLEncoder.encode(typed, "UTF-8")
                       }
-                      address.setText(typed)
                       web.loadUrl(target)
                   }
-                  val useUrl = button("Use this URL in downloader", Color.rgb(0, 160, 70))
-                  useUrl.setOnClickListener {
-                      val current = web.url ?: address.text.toString()
-                      urlBox.setText(current)
-                      (it.parent as? android.view.ViewGroup)?.let { _ -> }
+
+                  goButton.setOnClickListener { navigate(address.text.toString()) }
+                  address.setOnEditorActionListener { _, _, _ ->
+                      navigate(address.text.toString())
+                      true
                   }
-                  browserLayout.addView(navRow)
-                  browserLayout.addView(web, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-                  browserLayout.addView(useUrl)
-                  val dialog = AlertDialog.Builder(this).setTitle("Plexo Browser").setView(browserLayout)
-                      .setNegativeButton("Close", null).create()
-                  useUrl.setOnClickListener {
+                  backButton.setOnClickListener { if (web.canGoBack()) web.goBack() }
+                  forwardButton.setOnClickListener { if (web.canGoForward()) web.goForward() }
+                  reloadButton.setOnClickListener {
+                      if (progress.visibility == android.view.View.VISIBLE) web.stopLoading() else web.reload()
+                  }
+                  homeButton.setOnClickListener { web.loadUrl("https://www.google.com") }
+                  bookmarkButton.setOnClickListener {
                       val current = web.url ?: address.text.toString()
-                      urlBox.setText(current)
+                      val saved = prefs.getStringSet("bookmarks", emptySet())?.toMutableSet() ?: mutableSetOf()
+                      saved.add(current)
+                      prefs.edit().putStringSet("bookmarks", saved).apply()
+                      bookmarkButton.text = "★"
+                      android.widget.Toast.makeText(this, "बुकमार्क सेव हो गया", android.widget.Toast.LENGTH_SHORT).show()
+                  }
+                  bookmarksButton.setOnClickListener {
+                      val saved = prefs.getStringSet("bookmarks", emptySet())?.toList()?.sorted() ?: emptyList()
+                      if (saved.isEmpty()) {
+                          AlertDialog.Builder(this).setMessage("अभी कोई बुकमार्क सेव नहीं है। ☆ दबाकर वेबसाइट सेव करें।")
+                              .setPositiveButton("ठीक है", null).show()
+                      } else {
+                          AlertDialog.Builder(this).setTitle("बुकमार्क")
+                              .setItems(saved.toTypedArray()) { _, which -> navigate(saved[which]) }
+                              .setNegativeButton("बंद करें", null).show()
+                      }
+                  }
+                  findButton.setOnClickListener {
+                      val field = EditText(this).apply {
+                          hint = "इस पेज पर शब्द खोजें"
+                          setSingleLine(true)
+                      }
+                      AlertDialog.Builder(this).setTitle("पेज में खोजें").setView(field)
+                          .setPositiveButton("खोजें") { _, _ -> web.findAllAsync(field.text.toString()) }
+                          .setNeutralButton("खोज साफ़ करें") { _, _ -> web.clearMatches() }
+                          .setNegativeButton("रद्द करें", null).show()
+                  }
+                  desktopButton.setOnClickListener {
+                      desktopMode = !desktopMode
+                      web.settings.userAgentString = if (desktopMode) {
+                          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                      } else {
+                          mobileUserAgent
+                      }
+                      desktopButton.text = if (desktopMode) "Mobile" else "Desktop"
+                      web.reload()
+                  }
+                  shareButton.setOnClickListener {
+                      val current = web.url ?: address.text.toString()
+                      startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                          type = "text/plain"
+                          putExtra(Intent.EXTRA_TEXT, current)
+                      }, "लिंक शेयर करें"))
+                  }
+
+                  val sendToDownloader = makeButton("इस पेज का URL पुराने डाउनलोडर में भेजें", Color.rgb(0, 135, 70))
+                  browserLayout.addView(addressRow)
+                  browserLayout.addView(rowOne)
+                  browserLayout.addView(rowTwo)
+                  browserLayout.addView(progress, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 5))
+                  browserLayout.addView(titleView)
+                  browserLayout.addView(web, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+                  browserLayout.addView(sendToDownloader)
+
+                  val dialog = AlertDialog.Builder(this)
+                      .setTitle("Plexo Browser")
+                      .setView(browserLayout)
+                      .setNegativeButton("ब्राउज़र बंद करें", null)
+                      .create()
+                  sendToDownloader.setOnClickListener {
+                      urlBox.setText(web.url ?: address.text.toString())
+                      statusTv.text = "ब्राउज़र का URL पुराने डाउनलोडर में भेज दिया गया है। डाउनलोड शुरू करने के लिए Start Boosted Download दबाएँ।"
                       dialog.dismiss()
                   }
-                  dialog.setOnDismissListener { web.destroy() }
+                  dialog.setOnDismissListener {
+                      web.stopLoading()
+                      web.destroy()
+                  }
                   dialog.show()
-                  dialog.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, (resources.displayMetrics.heightPixels * 0.85f).toInt())
-                  go.performClick()
+                  dialog.window?.setLayout(
+                      ViewGroup.LayoutParams.MATCH_PARENT,
+                      ViewGroup.LayoutParams.MATCH_PARENT
+                  )
+                  navigate(address.text.toString())
               }
-
               private fun beginDownload() {
                   val text = urlBox.text.toString().trim()
                   val parsed = try { URL(text) } catch (_: Exception) { null }

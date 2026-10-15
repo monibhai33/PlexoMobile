@@ -74,8 +74,8 @@ jobs:
                   applicationId = "com.plexo.mobile"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 3
-                  versionName = "1.2"
+                  versionCode = 5
+                  versionName = "1.4"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -168,6 +168,12 @@ jobs:
               private lateinit var activateBtn: Button
               private lateinit var stopBtn: Button
               private var networksRequested = false
+              private val wifiByteCounter = AtomicLong(0L)
+              private val cellByteCounter = AtomicLong(0L)
+              private val speedLock = Any()
+              private var lastSpeedAt = 0L
+              private var lastWifiBytes = 0L
+              private var lastCellBytes = 0L
 
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
@@ -396,106 +402,153 @@ jobs:
                   val fileName = parsed.path.substringAfterLast('/')
                       .ifBlank { "plexo-download.bin" }
                       .replace(Regex("[^A-Za-z0-9._-]"), "_")
-                  val temp = File(cacheDir, "plexo-${System.currentTimeMillis()}.part")
-                  val net = wifiNet ?: cellNet
-                  ui.post { statusTv.text = "Checking server range support..." }
+                  val key = url.hashCode().toUInt().toString(16)
+                  val workDir = File(cacheDir, "plexo-resume-$key").apply { mkdirs() }
+                  val meta = File(workDir, "source.url")
+                  if (meta.exists() && meta.readText() != url) {
+                      workDir.deleteRecursively()
+                      workDir.mkdirs()
+                  }
+                  meta.writeText(url)
 
+                  val probe = connection(url, wifiNet ?: cellNet)
                   var total = -1L
-                  var rangeSupported = false
-                  val probe = connection(url, net)
+                  var supportsRanges = false
                   try {
-                      probe.requestMethod = "GET"
                       probe.setRequestProperty("Range", "bytes=0-0")
                       val code = probe.responseCode
-                      val header = probe.getHeaderField("Content-Range") ?: ""
-                      val match = Regex("bytes\\s+0-0/(\\d+)", RegexOption.IGNORE_CASE).find(header)
+                      val cr = probe.getHeaderField("Content-Range") ?: ""
+                      val match = Regex("bytes\\s+0-0/(\\d+)", RegexOption.IGNORE_CASE).find(cr)
                       if (code == HttpURLConnection.HTTP_PARTIAL && match != null) {
                           total = match.groupValues[1].toLongOrNull() ?: -1L
-                          rangeSupported = total > 0L
+                          supportsRanges = total > 0L
+                      } else if (code in 200..299) {
+                          total = probe.contentLengthLong
+                      } else {
+                          throw IOException("Server returned HTTP $code. Check the direct file URL.")
                       }
-                      try { probe.inputStream?.close() } catch (_: Exception) {}
                   } finally {
                       probe.disconnect()
                   }
-                  if (stopped.get()) return
 
-                  if (rangeSupported && total >= 2L * 1024L * 1024L) {
-                      try {
-                          ui.post { statusTv.text = "Parallel download started..." }
-                          downloadChunks(url, temp, total)
-                      } catch (e: Exception) {
-                          if (stopped.get()) return
-                          temp.delete()
-                          ui.post { statusTv.text = "Parallel download failed; retrying normal download..." }
-                          downloadSingle(url, temp)
+                  ui.post {
+                      statusTv.text = "Preparing download..."
+                      lastSpeedAt = System.currentTimeMillis()
+                      lastWifiBytes = wifiByteCounter.get()
+                      lastCellBytes = cellByteCounter.get()
+                  }
+
+                  val assembled = File(workDir, "complete.part")
+                  if (supportsRanges && total > 0L) {
+                      downloadChunksResumable(url, workDir, total)
+                      if (stopped.get()) {
+                          ui.post { statusTv.text = "Paused. Press Start to resume the saved parts." }
+                          return
+                      }
+                      RandomAccessFile(assembled, "rw").use { output ->
+                          output.setLength(total)
+                          val count = 8
+                          val chunkSize = (total + count - 1L) / count
+                          for (i in 0 until count) {
+                              val chunkStart = i * chunkSize
+                              if (chunkStart >= total) continue
+                              val expected = minOf(chunkSize, total - chunkStart)
+                              val part = File(workDir, "chunk-$i.part")
+                              if (!part.exists() || part.length() != expected) {
+                                  throw IOException("Part ${i + 1}/$count is incomplete; press Start to retry.")
+                              }
+                              FileInputStream(part).use { input ->
+                                  output.seek(chunkStart)
+                                  input.copyTo(object : java.io.OutputStream() {
+                                      override fun write(b: Int) { output.write(b) }
+                                      override fun write(b: ByteArray, off: Int, len: Int) { output.write(b, off, len) }
+                                  })
+                              }
+                          }
                       }
                   } else {
-                      ui.post {
-                          statusTv.text = if (rangeSupported) "Small file: using normal download..."
-                          else "Server has no range support; using normal download..."
+                      // Some servers reject Range requests; use a resumable single stream instead.
+                      downloadSingleResumable(url, assembled)
+                      if (stopped.get()) {
+                          ui.post { statusTv.text = "Paused at ${formatSize(assembled.length())}. Press Start to resume." }
+                          return
                       }
-                      downloadSingle(url, temp)
                   }
 
-                  if (stopped.get()) {
-                      temp.delete()
-                      return
+                  if (stopped.get()) return
+                  if (!assembled.exists() || assembled.length() <= 0L) {
+                      throw IOException("The server returned an empty file.")
                   }
-                  if (!temp.exists() || temp.length() <= 0L) throw IOException("The server returned an empty file.")
-                  val location = saveToDownloads(temp, fileName)
-                  temp.delete()
+                  val location = saveToDownloads(assembled, fileName)
+                  workDir.deleteRecursively()
                   ui.post {
                       bar.progress = 100
-                      totalTv.text = "Download complete"
+                      totalTv.text = "Combined Speed: 0 KB/s"
                       statusTv.text = "Complete! Saved to $location"
                   }
               }
 
-              private fun downloadChunks(url: String, temp: File, total: Long) {
-                  val count = minOf(8, maxOf(2, (total / (2L * 1024L * 1024L)).toInt()))
-                  val size = (total + count - 1L) / count
+              private fun downloadChunksResumable(url: String, workDir: File, total: Long) {
+                  val count = 8
+                  val chunkSize = (total + count - 1L) / count
                   val nets = listOfNotNull(wifiNet, cellNet).distinct()
-                  val done = AtomicLong(0L)
-                  val started = System.currentTimeMillis()
                   val executor = Executors.newFixedThreadPool(count)
                   val futures = ArrayList<Future<*>>()
-                  RandomAccessFile(temp, "rw").use { it.setLength(total) }
+                  val done = AtomicLong(0L)
+                  val initial = (0 until count).sumOf { i ->
+                      val start = i * chunkSize
+                      if (start >= total) 0L else File(workDir, "chunk-$i.part").takeIf { it.exists() }?.length() ?: 0L
+                  }
+                  done.set(initial.coerceAtMost(total))
                   try {
                       for (i in 0 until count) {
-                          val start = i * size
+                          val start = i * chunkSize
                           if (start >= total) continue
-                          val end = minOf(total - 1L, start + size - 1L)
-                          val selected = if (nets.isEmpty()) null else nets[i % nets.size]
+                          val end = minOf(total - 1L, start + chunkSize - 1L)
+                          val expected = end - start + 1L
+                          val part = File(workDir, "chunk-$i.part")
+                          if (part.exists() && part.length() == expected) continue
+
                           futures.add(executor.submit(Callable {
-                              val c = connection(url, selected)
+                              var offset = if (part.exists()) part.length() else 0L
+                              if (offset > expected) {
+                                  part.delete()
+                                  offset = 0L
+                              }
+                              val selected = if (nets.isEmpty()) null else nets[i % nets.size]
+                              val useWifi = selected != null && selected == wifiNet
+                              var c = connection(url, selected)
                               try {
-                                  c.setRequestProperty("Range", "bytes=$start-$end")
-                                  val code = c.responseCode
-                                  val header = c.getHeaderField("Content-Range") ?: ""
-                                  val m = Regex("bytes\\s+(\\d+)-(\\d+)/(\\d+)", RegexOption.IGNORE_CASE).find(header)
-                                  if (code != HttpURLConnection.HTTP_PARTIAL || m == null ||
-                                      m.groupValues[1].toLong() != start ||
-                                      m.groupValues[2].toLong() != end ||
-                                      m.groupValues[3].toLong() != total) {
-                                      throw IOException("Server rejected a requested byte range.")
+                                  if (offset > 0L) c.setRequestProperty("Range", "bytes=${start + offset}-$end")
+                                  else c.setRequestProperty("Range", "bytes=$start-$end")
+                                  var code = c.responseCode
+                                  if (code != HttpURLConnection.HTTP_PARTIAL) {
+                                      throw IOException("Server does not support byte-range chunks; use a direct download link that supports Range.")
                                   }
-                                  var written = 0L
-                                  c.inputStream.use { input ->
-                                      RandomAccessFile(temp, "rw").use { output ->
-                                          output.seek(start)
+                                  val cr = c.getHeaderField("Content-Range") ?: ""
+                                  val m = Regex("bytes\\s+(\\d+)-(\\d+)/(\\d+)", RegexOption.IGNORE_CASE).find(cr)
+                                  if (m == null || m.groupValues[1].toLong() != start + offset ||
+                                      m.groupValues[2].toLong() != end || m.groupValues[3].toLong() != total) {
+                                      throw IOException("Server returned an invalid byte range for part ${i + 1}.")
+                                  }
+
+                                  val started = System.currentTimeMillis()
+                                  FileOutputStream(part, offset > 0L).use { output ->
+                                      c.inputStream.use { input ->
                                           val buffer = ByteArray(32 * 1024)
                                           while (!stopped.get() && !Thread.currentThread().isInterrupted) {
                                               val n = input.read(buffer)
                                               if (n < 0) break
                                               output.write(buffer, 0, n)
-                                              written += n
                                               done.addAndGet(n.toLong())
-                                              updateProgress(done.get(), total, started)
+                                              if (useWifi) wifiByteCounter.addAndGet(n.toLong())
+                                              else if (selected != null) cellByteCounter.addAndGet(n.toLong())
+                                              updateNetworkProgress(done.get(), total, started)
                                           }
                                       }
                                   }
-                                  if (!stopped.get() && written != end - start + 1L) {
-                                      throw IOException("A download part was incomplete.")
+                                  if (!stopped.get() && part.length() != expected) {
+                                      throw IOException("Part ${i + 1} incomplete. Press Start to resume.")
                                   }
                               } finally {
                                   c.disconnect()
@@ -503,13 +556,96 @@ jobs:
                           }))
                       }
                       futures.forEach { it.get() }
-                      if (stopped.get()) throw IOException("Download stopped.")
+                      if (stopped.get()) throw IOException("Download paused.")
                   } catch (e: Exception) {
                       executor.shutdownNow()
-                      executor.awaitTermination(27, TimeUnit.SECONDS)
+                      executor.awaitTermination(10, TimeUnit.SECONDS)
                       throw e
                   } finally {
                       executor.shutdownNow()
+                  }
+              }
+
+              private fun updateNetworkProgress(done: Long, total: Long, started: Long) {
+                  val now = System.currentTimeMillis()
+                  synchronized(speedLock) {
+                      if (now - lastSpeedAt >= 700L) {
+                          val wifiNow = wifiByteCounter.get()
+                          val cellNow = cellByteCounter.get()
+                          val elapsed = maxOf(1L, now - lastSpeedAt)
+                          val wifiSpeed = maxOf(0L, (wifiNow - lastWifiBytes) * 1000L / elapsed / 1024L)
+                          val cellSpeed = maxOf(0L, (cellNow - lastCellBytes) * 1000L / elapsed / 1024L)
+                          lastSpeedAt = now
+                          lastWifiBytes = wifiNow
+                          lastCellBytes = cellNow
+                          val combined = wifiSpeed + cellSpeed
+                          ui.post {
+                              wifiTv.text = "Wi-Fi: ${if (wifiNet != null) "Connected" else "Unavailable"} | ${formatSpeed(wifiSpeed)}"
+                              cellTv.text = "Mobile Data: ${if (cellNet != null) "Connected" else "Unavailable"} | ${formatSpeed(cellSpeed)}"
+                              totalTv.text = "Combined Speed: ${formatSpeed(combined)}"
+                              if (total > 0L) {
+                                  bar.progress = ((done * 100L) / total).toInt().coerceIn(0, 100)
+                                  statusTv.text = "${bar.progress}% • ${formatSize(done.coerceAtMost(total))}/${formatSize(total)} • Avg ${formatSpeed(done * 1000L / maxOf(1L, now - started) / 1024L)}"
+                              }
+                          }
+                      }
+                  }
+              }
+
+              private fun downloadSingleResumable(url: String, temp: File) {
+                  var offset = if (temp.exists()) temp.length() else 0L
+                  var c = connection(url, wifiNet ?: cellNet)
+                  var total = -1L
+                  var append = false
+                  val selected = wifiNet ?: cellNet
+                  val useWifi = selected != null && selected == wifiNet
+                  try {
+                      if (offset > 0L) c.setRequestProperty("Range", "bytes=$offset-")
+                      val code = c.responseCode
+                      if (offset > 0L && code == HttpURLConnection.HTTP_PARTIAL) {
+                          val cr = c.getHeaderField("Content-Range") ?: ""
+                          val m = Regex("bytes\\s+(\\d+)-(\\d+)/(\\d+|\\*)", RegexOption.IGNORE_CASE).find(cr)
+                          if (m != null && m.groupValues[1].toLongOrNull() == offset) {
+                              total = m.groupValues[3].toLongOrNull() ?: -1L
+                              append = true
+                          } else {
+                              c.disconnect()
+                              temp.delete()
+                              offset = 0L
+                              c = connection(url, wifiNet ?: cellNet)
+                          }
+                      } else if (offset > 0L) {
+                          c.disconnect()
+                          temp.delete()
+                          offset = 0L
+                          c = connection(url, wifiNet ?: cellNet)
+                      }
+                      if (offset == 0L) {
+                          val freshCode = if (c == null) 0 else c.responseCode
+                          if (freshCode !in 200..299) throw IOException("Server returned HTTP $freshCode.")
+                          total = c.contentLengthLong
+                      }
+                      val started = System.currentTimeMillis()
+                      var received = offset
+                      FileOutputStream(temp, append).use { output ->
+                          c.inputStream.use { input ->
+                              val buffer = ByteArray(32 * 1024)
+                              while (!stopped.get()) {
+                                  val n = input.read(buffer)
+                                  if (n < 0) break
+                                  output.write(buffer, 0, n)
+                                  received += n
+                                  if (useWifi) wifiByteCounter.addAndGet(n.toLong())
+                                  else if (selected != null) cellByteCounter.addAndGet(n.toLong())
+                                  updateNetworkProgress(received, total, started)
+                              }
+                          }
+                      }
+                      if (!stopped.get() && total > 0L && received != total) {
+                          throw IOException("Download ended early ($received of $total bytes). Press Start to retry.")
+                      }
+                  } finally {
+                      c.disconnect()
                   }
               }
 
@@ -550,6 +686,15 @@ jobs:
                   }
               }
 
+              private fun formatSize(bytes: Long): String {
+                  val kb = bytes / 1024.0
+                  return if (kb >= 1024.0) {
+                      String.format(Locale.US, "%.2f MB", kb / 1024.0)
+                  } else {
+                      String.format(Locale.US, "%.0f KB", kb)
+                  }
+              }
+
               private fun updateProgress(done: Long, total: Long, started: Long) {
                   val elapsed = maxOf(1L, System.currentTimeMillis() - started)
                   val speedKBps = done * 1000L / elapsed / 1024L
@@ -557,9 +702,9 @@ jobs:
                   ui.post {
                       if (total > 0L) {
                           bar.progress = ((done * 100L) / total).toInt().coerceIn(0, 100)
-                          statusTv.text = "${bar.progress}% • ${done / 1024L}/${total / 1024L} KB • Avg $speedText"
+                          statusTv.text = "${bar.progress}% • ${formatSize(done)}/${formatSize(total)} • Avg $speedText"
                       } else {
-                          statusTv.text = "${done / 1024L} KB downloaded • Avg $speedText"
+                          statusTv.text = "${formatSize(done)} downloaded • Avg $speedText"
                       }
                       totalTv.text = "Download speed: $speedText"
                   }

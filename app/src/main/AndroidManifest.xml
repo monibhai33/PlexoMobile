@@ -1,6 +1,0 @@
-settings.gradle.kts
-build.gradle.kts
-app/build.gradle.kts
-app/src/main/AndroidManifest.xml
-app/src/main/java/com/plexo/mobile/MainActivity.kt
-app/src/main/java/com/plexo/mobile/TorrentHelper.kt

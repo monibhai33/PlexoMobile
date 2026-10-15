@@ -9,26 +9,446 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
+      - name: Generate Clean Android Project Files
+        run: |
+          rm -rf app build.gradle.kts settings.gradle.kts gradle.properties
+          mkdir -p app/src/main/java/com/plexo/mobile
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.7'
+          cat << 'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          EOF
 
-      - name: Build Debug APK
-        run: gradle assembleDebug
+          cat << 'EOF' > settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "PlexoMobile"
+          include(":app")
+          EOF
 
-      - name: Upload Ready APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: Plexo-Mobile-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
-          
+          cat << 'EOF' > build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.5.0" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+
+          cat << 'EOF' > app/build.gradle.kts
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.plexo.mobile"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.plexo.mobile"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+
+              <application
+                  android:allowBackup="true"
+                  android:icon="@android:drawable/stat_sys_download"
+                  android:label="Plexo Mobile"
+                  android:usesCleartextTraffic="true"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/plexo/mobile/MainActivity.kt
+          package com.plexo.mobile
+
+          import android.app.Activity
+          import android.content.Context
+          import android.graphics.Color
+          import android.graphics.Typeface
+          import android.graphics.drawable.GradientDrawable
+          import android.net.ConnectivityManager
+          import android.net.Network
+          import android.net.NetworkCapabilities
+          import android.net.NetworkRequest
+          import android.os.Bundle
+          import android.os.Environment
+          import android.os.Handler
+          import android.os.Looper
+          import android.view.Gravity
+          import android.widget.*
+          import java.io.File
+          import java.io.RandomAccessFile
+          import java.net.HttpURLConnection
+          import java.net.URL
+          import java.util.concurrent.Executors
+          import java.util.concurrent.atomic.AtomicBoolean
+          import java.util.concurrent.atomic.AtomicLong
+
+          class MainActivity : Activity() {
+
+              private lateinit var connectivityManager: ConnectivityManager
+              @Volatile private var wifiNetwork: Network? = null
+              @Volatile private var cellNetwork: Network? = null
+
+              private val mainHandler = Handler(Looper.getMainLooper())
+              private val executor = Executors.newCachedThreadPool()
+              private val isDownloading = AtomicBoolean(false)
+              private val isPaused = AtomicBoolean(false)
+
+              private lateinit var wifiStatusTv: TextView
+              private lateinit var cellStatusTv: TextView
+              private lateinit var totalSpeedTv: TextView
+              private lateinit var progressBar: ProgressBar
+              private lateinit var statusTv: TextView
+              private lateinit var urlInput: EditText
+              private lateinit var startBtn: Button
+              private lateinit var pauseBtn: Button
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+
+                  val scrollView = ScrollView(this).apply {
+                      setBackgroundColor(Color.parseColor("#121212"))
+                      isFillViewport = true
+                  }
+
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(48, 64, 48, 64)
+                  }
+
+                  val titleTv = TextView(this).apply {
+                      text = "⚡ Plexo Mobile"
+                      textSize = 26f
+                      setTypeface(null, Typeface.BOLD)
+                      setTextColor(Color.WHITE)
+                  }
+                  root.addView(titleTv)
+
+                  val subTv = TextView(this).apply {
+                      text = "Combine Wi-Fi + 5G/4G Networks for Faster Downloads"
+                      textSize = 13f
+                      setTextColor(Color.parseColor("#AAAAAA"))
+                      setPadding(0, 8, 0, 40)
+                  }
+                  root.addView(subTv)
+
+                  // Speed & Network Card
+                  val card = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(40, 40, 40, 40)
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor("#1E1E1E"))
+                          cornerRadius = 32f
+                      }
+                  }
+
+                  wifiStatusTv = TextView(this).apply {
+                      text = "📶 Wi-Fi: Waiting...   |   0 KB/s"
+                      textSize = 15f
+                      setTextColor(Color.parseColor("#4CAF50"))
+                      setPadding(0, 0, 0, 16)
+                  }
+                  card.addView(wifiStatusTv)
+
+                  cellStatusTv = TextView(this).apply {
+                      text = "📱 Mobile Data: Waiting...   |   0 KB/s"
+                      textSize = 15f
+                      setTextColor(Color.parseColor("#2196F3"))
+                      setPadding(0, 0, 0, 24)
+                  }
+                  card.addView(cellStatusTv)
+
+                  totalSpeedTv = TextView(this).apply {
+                      text = "🚀 Combined Speed: 0 KB/s"
+                      textSize = 19f
+                      setTypeface(null, Typeface.BOLD)
+                      setTextColor(Color.parseColor("#FFC107"))
+                  }
+                  card.addView(totalSpeedTv)
+
+                  val cardParams = LinearLayout.LayoutParams(
+                      LinearLayout.LayoutParams.MATCH_PARENT,
+                      LinearLayout.LayoutParams.WRAP_CONTENT
+                  ).apply { bottomMargin = 40 }
+                  root.addView(card, cardParams)
+
+                  // Activate Networks Button
+                  val bindBtn = Button(this).apply {
+                      text = "1. Activate Wi-Fi + Mobile Data"
+                      setTextColor(Color.WHITE)
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor("#2962FF"))
+                          cornerRadius = 24f
+                      }
+                      setOnClickListener { bindBothNetworks() }
+                  }
+                  val btnParams = LinearLayout.LayoutParams(
+                      LinearLayout.LayoutParams.MATCH_PARENT,
+                      LinearLayout.LayoutParams.WRAP_CONTENT
+                  ).apply { bottomMargin = 40 }
+                  root.addView(bindBtn, btnParams)
+
+                  // URL Input Box
+                  urlInput = EditText(this).apply {
+                      hint = "Paste Direct Download Link (https://...)"
+                      setHintTextColor(Color.parseColor("#888888"))
+                      setTextColor(Color.WHITE)
+                      setSingleLine(true)
+                      setPadding(36, 36, 36, 36)
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor("#1E1E1E"))
+                          setStroke(3, Color.parseColor("#444444"))
+                          cornerRadius = 24f
+                      }
+                  }
+                  root.addView(urlInput, btnParams)
+
+                  // Progress Bar
+                  progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                      max = 100
+                      progress = 0
+                      setPadding(0, 0, 0, 20)
+                  }
+                  root.addView(progressBar, LinearLayout.LayoutParams(
+                      LinearLayout.LayoutParams.MATCH_PARENT,
+                      LinearLayout.LayoutParams.WRAP_CONTENT
+                  ))
+
+                  statusTv = TextView(this).apply {
+                      text = "0%  •  Ready to boost download"
+                      textSize = 14f
+                      setTextColor(Color.WHITE)
+                      setPadding(0, 12, 0, 40)
+                  }
+                  root.addView(statusTv)
+
+                  // Start Download Button
+                  startBtn = Button(this).apply {
+                      text = "2. Start Multi-Network Download"
+                      setTextColor(Color.BLACK)
+                      setTypeface(null, Typeface.BOLD)
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor("#00E676"))
+                          cornerRadius = 24f
+                      }
+                      setOnClickListener {
+                          val url = urlInput.text.toString().trim()
+                          if (url.isNotEmpty() && !isDownloading.get()) {
+                              isPaused.set(false)
+                              startMultiDownload(url)
+                          } else if (url.isEmpty()) {
+                              statusTv.text = "Please paste a valid file link first!"
+                          }
+                      }
+                  }
+                  root.addView(startBtn, btnParams)
+
+                  // Pause / Cancel Button
+                  pauseBtn = Button(this).apply {
+                      text = "Stop / Pause Download"
+                      setTextColor(Color.WHITE)
+                      background = GradientDrawable().apply {
+                          setColor(Color.parseColor("#D32F2F"))
+                          cornerRadius = 24f
+                      }
+                      setOnClickListener {
+                          if (isDownloading.get()) {
+                              isPaused.set(true)
+                              isDownloading.set(false)
+                              statusTv.text = "Download Paused."
+                          }
+                      }
+                  }
+                  root.addView(pauseBtn, btnParams)
+
+                  scrollView.addView(root)
+                  setContentView(scrollView)
+              }
+
+              private fun bindBothNetworks() {
+                  statusTv.text = "Requesting Wi-Fi and Mobile Data simultaneously..."
+                  try {
+                      val wifiReq = NetworkRequest.Builder()
+                          .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                          .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                          .build()
+
+                      val cellReq = NetworkRequest.Builder()
+                          .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+                          .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                          .build()
+
+                      connectivityManager.requestNetwork(wifiReq, object : ConnectivityManager.NetworkCallback() {
+                          override fun onAvailable(network: Network) {
+                              wifiNetwork = network
+                              mainHandler.post {
+                                  wifiStatusTv.text = "📶 Wi-Fi: Connected ✅   |   0 KB/s"
+                              }
+                          }
+                      })
+
+                      connectivityManager.requestNetwork(cellReq, object : ConnectivityManager.NetworkCallback() {
+                          override fun onAvailable(network: Network) {
+                              cellNetwork = network
+                              mainHandler.post {
+                                  cellStatusTv.text = "📱 Mobile Data: Connected ✅   |   0 KB/s"
+                              }
+                          }
+                      })
+                  } catch (e: Exception) {
+                      statusTv.text = "Network Bind Note: ${e.localizedMessage}"
+                  }
+              }
+
+              private fun startMultiDownload(fileUrl: String) {
+                  isDownloading.set(true)
+                  executor.execute {
+                      try {
+                          val activeNets = listOfNotNull(wifiNetwork, cellNetwork)
+                          mainHandler.post { statusTv.text = "Checking file size from server..." }
+
+                          val headConn = (if (activeNets.isNotEmpty()) {
+                              activeNets.first().openConnection(URL(fileUrl))
+                          } else {
+                              URL(fileUrl).openConnection()
+                          }) as HttpURLConnection
+
+                          headConn.requestMethod = "HEAD"
+                          headConn.connectTimeout = 15000
+                          val totalSize = headConn.contentLengthLong
+                          headConn.disconnect()
+
+                          if (totalSize <= 0) {
+                              mainHandler.post {
+                                  statusTv.text = "Error: Server did not provide file size or invalid direct link."
+                              }
+                              isDownloading.set(false)
+                              return@execute
+                          }
+
+                          val cleanName = fileUrl.substringBefore("?").substringAfterLast("/").ifBlank { "plexo_download.bin" }
+                          val outDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                          if (!outDir.exists()) outDir.mkdirs()
+                          val outputFile = File(outDir, cleanName)
+                          RandomAccessFile(outputFile, "rw").use { it.setLength(totalSize) }
+
+                          val wifiBytes = AtomicLong(0)
+                          val cellBytes = AtomicLong(0)
+                          val totalBytes = AtomicLong(0)
+
+                          // Speed Meter Thread
+                          executor.execute {
+                              var lastW = 0L
+                              var lastC = 0L
+                              while (isDownloading.get() && !isPaused.get()) {
+                                  Thread.sleep(1000)
+                                  val curW = wifiBytes.get()
+                                  val curC = cellBytes.get()
+                                  val wSpd = curW - lastW
+                                  val cSpd = curC - lastC
+                                  lastW = curW
+                                  lastC = curC
+                                  val pct = ((totalBytes.get() * 100) / totalSize).toInt().coerceIn(0, 100)
+
+                                  mainHandler.post {
+                                      wifiStatusTv.text = "📶 Wi-Fi: Active   |   ${formatSpeed(wSpd)}"
+                                      cellStatusTv.text = "📱 Mobile Data: Active   |   ${formatSpeed(cSpd)}"
+                                      totalSpeedTv.text = "🚀 Combined Speed: ${formatSpeed(wSpd + cSpd)}"
+                                      progressBar.progress = pct
+                                      statusTv.text = "$pct%  •  Downloading in 8 parallel streams..."
+                                  }
+                              }
+                          }
+
+                          val chunks = 8
+                          val chunkSize = totalSize / chunks
+                          val tasks = (0 until chunks).map { idx ->
+                              executor.submit {
+                                  val start = idx * chunkSize
+                                  val end = if (idx == chunks - 1) totalSize - 1 else (start + chunkSize - 1)
+                                  val useWifi = (idx % 2 == 0 && wifiNetwork != null) || cellNetwork == null
+                                  val chosenNet = if (useWifi) wifiNetwork else cellNetwork
+
+                                  val conn = (if (chosenNet != null) {
+                                      chosenNet.openConnection(URL(fileUrl))
+                                  } else {
+                                      URL(fileUrl).openConnection()
+                                  }) as HttpURLConnection
+
+                                  conn.setRequestProperty("Range", "bytes=$start-$end")
+                                  conn.connectTimeout = 20000
+                                  conn.readTimeout = 20000
+
+                                  conn.inputStream.use { input ->
+                                      RandomAccessFile(outputFile, "rw").use { raf ->
+                                          raf.seek(start)
+                                          val buf = ByteArray(8192)
+                                          var read: Int
+                                          while (input.read(buf).also { read = it } != -1 && !isPaused.get()) {
+                                              raf.write(buf, 0, read)
+                                              totalBytes.addAndGet(read.toLong())
+                                              if (useWifi) wifiBytes.addAndGet(read.toLong())
+                                              else cellBytes.addAndGet(read.toLong())
+                                          }
+                                      }
+                                  }
+                                  conn.disconnect()
+                              }
+                          }
+
+                          tasks.forEach { it.get() }
+
+                          if (!isPaused.get()) {
+                              isDownloading.set(false)
+                              mainHandler.post {
+        

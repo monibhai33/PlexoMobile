@@ -432,10 +432,12 @@ jobs:
                   }
 
                   ui.post {
-                      statusTv.text = "Preparing download..."
+                      statusTv.text = "Preparing 8-part download..."
+                      wifiByteCounter.set(0L)
+                      cellByteCounter.set(0L)
                       lastSpeedAt = System.currentTimeMillis()
-                      lastWifiBytes = wifiByteCounter.get()
-                      lastCellBytes = cellByteCounter.get()
+                      lastWifiBytes = 0L
+                      lastCellBytes = 0L
                   }
 
                   val assembled = File(workDir, "complete.part")
@@ -491,7 +493,10 @@ jobs:
               private fun downloadChunksResumable(url: String, workDir: File, total: Long) {
                   val count = 8
                   val chunkSize = (total + count - 1L) / count
-                  val nets = listOfNotNull(wifiNet, cellNet).distinct()
+                  // Keep a fixed 4/4 split when both networks are available.
+                  // Even-numbered chunks prefer Wi-Fi; odd-numbered chunks prefer cellular.
+                  val wifiAvailable = wifiNet
+                  val cellAvailable = cellNet
                   val executor = Executors.newFixedThreadPool(count)
                   val futures = ArrayList<Future<*>>()
                   val done = AtomicLong(0L)
@@ -515,8 +520,15 @@ jobs:
                                   part.delete()
                                   offset = 0L
                               }
-                              val selected = if (nets.isEmpty()) null else nets[i % nets.size]
-                              val useWifi = selected != null && selected == wifiNet
+                              val selected = if (i % 2 == 0) {
+                                  wifiAvailable ?: cellAvailable
+                              } else {
+                                  cellAvailable ?: wifiAvailable
+                              }
+                              if (selected == null) {
+                                  throw IOException("No usable network. Press Activate Wi-Fi + Mobile Data first.")
+                              }
+                              val useWifi = wifiAvailable != null && selected == wifiAvailable
                               var c = connection(url, selected)
                               try {
                                   if (offset > 0L) c.setRequestProperty("Range", "bytes=${start + offset}-$end")
